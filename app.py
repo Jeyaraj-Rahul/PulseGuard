@@ -182,27 +182,39 @@ if app_mode == "Video Analysis Dashboard":
                     with prev_cols[idx]:
                         st.image(p_frame, caption=f"ROI Tracking Sample #{idx+1}", use_container_width=True)
 
-            st.markdown(f"**Face Tracking Stability:** `{extraction['face_tracking_ratio']*100:.1f}%` of frames locked.")
+            track_ratio = extraction["face_tracking_ratio"]
+            if track_ratio == 0.0:
+                st.error("❌ Face tracking failed completely (0.0% of frames locked). No human face detected in the video.")
+            elif track_ratio < 0.35:
+                st.warning(f"⚠️ Low face tracking stability ({track_ratio*100:.1f}%). Pulse signals and cross-region coherence may be unreliable.")
+            else:
+                st.success(f"✅ Face tracking locked on {track_ratio*100:.1f}% of video frames.")
 
             # --- METRICS PANEL ---
             st.markdown("---")
             st.subheader("Step 3: Multi-Region Heart Rate & Signal Quality")
 
-            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-            with m_col1:
-                st.metric("Forehead Pulse", f"{features['forehead_bpm']:.1f} BPM", f"SNR: {features['forehead_snr']:.1f} dB")
-            with m_col2:
-                st.metric("Left Cheek Pulse", f"{features['left_cheek_bpm']:.1f} BPM", f"SNR: {features['left_cheek_snr']:.1f} dB")
-            with m_col3:
-                st.metric("Right Cheek Pulse", f"{features['right_cheek_bpm']:.1f} BPM", f"SNR: {features['right_cheek_snr']:.1f} dB")
-            with m_col4:
-                st.metric("Nose Bridge Pulse", f"{features['nose_bpm']:.1f} BPM", f"SNR: {features['nose_snr']:.1f} dB")
+            if track_ratio == 0.0:
+                st.info("ℹ️ No facial skin regions detected. Pulse metrics are unavailable.")
+            else:
+                m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+                with m_col1:
+                    st.metric("Forehead Pulse", f"{features['forehead_bpm']:.1f} BPM" if features['forehead_bpm'] > 0 else "No Pulse", f"SNR: {features['forehead_snr']:.1f} dB")
+                with m_col2:
+                    st.metric("Left Cheek Pulse", f"{features['left_cheek_bpm']:.1f} BPM" if features['left_cheek_bpm'] > 0 else "No Pulse", f"SNR: {features['left_cheek_snr']:.1f} dB")
+                with m_col3:
+                    st.metric("Right Cheek Pulse", f"{features['right_cheek_bpm']:.1f} BPM" if features['right_cheek_bpm'] > 0 else "No Pulse", f"SNR: {features['right_cheek_snr']:.1f} dB")
+                with m_col4:
+                    st.metric("Nose Bridge Pulse", f"{features['nose_bpm']:.1f} BPM" if features['nose_bpm'] > 0 else "No Pulse", f"SNR: {features['nose_snr']:.1f} dB")
 
             # --- VISUALIZATION: WAVEFORMS AND PSD ---
             st.markdown("---")
             st.subheader("Step 4: Filtered rPPG Pulse Waveforms & FFT Spectra")
-            fig = create_waveform_and_spectrum_figure(timestamps, roi_signals, roi_spectra)
-            st.pyplot(fig)
+            if track_ratio == 0.0:
+                st.warning("⚠️ Cannot render pulse waveforms: face was not detected in video frames.")
+            else:
+                fig = create_waveform_and_spectrum_figure(timestamps, roi_signals, roi_spectra)
+                st.pyplot(fig)
 
             # --- STEP 5: PREDICTION & EVALUATION DISTINCTION ---
             st.markdown("---")
@@ -211,27 +223,39 @@ if app_mode == "Video Analysis Dashboard":
             col_pred, col_details = st.columns([1, 1])
 
             with col_pred:
-                pred_result = classifier.predict_sample(features)
-                
                 st.markdown("### Forensic Determination")
-                if pred_result["is_model_trained"]:
-                    if pred_result["label"] == 1:
-                        st.markdown(f"<div class='badge-real' style='font-size:20px; display:inline-block; padding:10px 20px; margin-bottom:10px;'>🟢 PREDICTION: {pred_result['prediction'].upper()}</div>", unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"<div class='badge-fake' style='font-size:20px; display:inline-block; padding:10px 20px; margin-bottom:10px;'>🔴 PREDICTION: {pred_result['prediction'].upper()}</div>", unsafe_allow_html=True)
-                    
-                    st.write(f"**Confidence:** `{pred_result['confidence']*100:.1f}%`")
-                    st.caption("⚠️ Notice: Prediction is provided by the calibrated subject-independent baseline model. See 'Methodology & Limitations' for deepfake spoofing caveats.")
+                if track_ratio == 0.0:
+                    st.markdown("<div class='badge-unvalidated' style='font-size:18px; display:inline-block; padding:8px 16px;'>⚠️ SAMPLE REJECTED: NO FACE DETECTED</div>", unsafe_allow_html=True)
+                    st.warning("Prediction skipped: No face was found to extract rPPG physiological signals. Upload a video with a visible, unobstructed face.")
                 else:
-                    st.markdown("<div class='badge-unvalidated' style='font-size:18px; display:inline-block; padding:8px 16px;'>⚠️ UNVALIDATED PRELIMINARY ANALYSIS</div>", unsafe_allow_html=True)
-                    st.info("No trained model loaded. Showing direct signal metrics without empirical classification.")
+                    # Validate features before inference
+                    is_valid_feat, invalid_keys, invalid_dict = classifier.validate_features(features)
+                    if not is_valid_feat:
+                        st.warning(f"⚠️ Detected {len(invalid_keys)} degraded/invalid features: {', '.join(invalid_keys)}. Features will be safely imputed via median training statistics.")
+
+                    pred_result = classifier.predict_sample(features)
+
+                    if pred_result["is_model_trained"] and pred_result.get("prediction") not in ["Unknown", "Error"]:
+                        if pred_result["label"] == 1:
+                            st.markdown(f"<div class='badge-real' style='font-size:20px; display:inline-block; padding:10px 20px; margin-bottom:10px;'>🟢 PREDICTION: {pred_result['prediction'].upper()}</div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown(f"<div class='badge-fake' style='font-size:20px; display:inline-block; padding:10px 20px; margin-bottom:10px;'>🔴 PREDICTION: {pred_result['prediction'].upper()}</div>", unsafe_allow_html=True)
+                        
+                        st.write(f"**Confidence:** `{pred_result['confidence']*100:.1f}%`")
+                        st.caption("⚠️ Notice: Prediction is provided by the calibrated subject-independent baseline model. See 'Methodology & Limitations' for deepfake spoofing caveats.")
+                    else:
+                        st.markdown("<div class='badge-unvalidated' style='font-size:18px; display:inline-block; padding:8px 16px;'>⚠️ UNVALIDATED PRELIMINARY ANALYSIS</div>", unsafe_allow_html=True)
+                        st.info(pred_result.get("explanation", "Showing direct signal metrics without empirical classification."))
 
             with col_details:
                 st.markdown("### Biophysiological Indicators")
-                st.write(f"- **Mean Cross-Patch Coherence:** `{features['mean_cross_coherence']:.3f}` *(Typical Real: > 0.50, Fake: < 0.35)*")
-                st.write(f"- **BPM Standard Deviation Across Face:** `{features['bpm_std_dev']:.2f} BPM` *(Typical Real: < 3.0, Fake: > 6.0)*")
-                st.write(f"- **Mean Blood Perfusion SNR:** `{features['mean_snr']:.2f} dB` *(Typical Real: > 3.0 dB)*")
-                st.write(f"- **Cross-Region Consistency Score:** `{features['consistency_score']:.3f} / 1.0`")
+                if track_ratio == 0.0:
+                    st.write("Biophysiological indicators unavailable (face not detected).")
+                else:
+                    st.write(f"- **Mean Cross-Patch Coherence:** `{features['mean_cross_coherence']:.3f}` *(Typical Real: > 0.50, Fake: < 0.35)*")
+                    st.write(f"- **BPM Standard Deviation Across Face:** `{features['bpm_std_dev']:.2f} BPM` *(Typical Real: < 3.0, Fake: > 6.0)*")
+                    st.write(f"- **Mean Blood Perfusion SNR:** `{features['mean_snr']:.2f} dB` *(Typical Real: > 3.0 dB)*")
+                    st.write(f"- **Cross-Region Consistency Score:** `{features['consistency_score']:.3f} / 1.0`")
 
         # Cleanup temp file on end
         try:

@@ -157,8 +157,29 @@ class SignalProcessor:
                 "power": power
             }
 
+        # Check for zero or flat signal (variance near zero)
+        if np.std(sig) < 1e-7 or np.all(sig == 0):
+            return {
+                "bpm": 0.0,
+                "peak_hz": 0.0,
+                "snr_db": -20.0,
+                "freqs": freqs,
+                "power": power
+            }
+
         band_power = power[band_mask]
         band_freqs = freqs[band_mask]
+        max_power = float(np.max(band_power))
+
+        # If in-band power is flat or virtually zero, no pulse detected
+        if max_power < 1e-12:
+            return {
+                "bpm": 0.0,
+                "peak_hz": 0.0,
+                "snr_db": -20.0,
+                "freqs": freqs,
+                "power": power
+            }
 
         peak_idx = np.argmax(band_power)
         peak_hz = float(band_freqs[peak_idx])
@@ -171,13 +192,15 @@ class SignalProcessor:
         if harmonic_hz <= self.high_cut_hz:
             signal_mask |= ((band_freqs >= harmonic_hz - 0.15) & (band_freqs <= harmonic_hz + 0.15))
 
-        sig_power = np.sum(band_power[signal_mask])
-        noise_power = np.sum(band_power[~signal_mask])
+        sig_power = float(np.sum(band_power[signal_mask]))
+        noise_power = float(np.sum(band_power[~signal_mask]))
 
-        if noise_power > 1e-12:
+        if sig_power <= 1e-12:
+            snr_db = -20.0
+        elif noise_power > 1e-12:
             snr_db = float(10.0 * np.log10(sig_power / noise_power))
         else:
-            snr_db = 20.0
+            snr_db = 15.0
 
         return {
             "bpm": round(peak_bpm, 1),

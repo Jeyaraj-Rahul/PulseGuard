@@ -51,16 +51,29 @@ class ConsistencyFeatureExtractor:
             max_corr = 0.0
 
         # Magnitude-squared coherence in cardiac band [0.7, 3.0 Hz]
-        nperseg = min(128, max(16, n // 2))
-        freqs, coh = signal.coherence(s1, s2, fs=self.fps, nperseg=nperseg)
-        cardiac_mask = (freqs >= 0.7) & (freqs <= 3.0)
-
-        if np.any(cardiac_mask):
-            mean_coh = float(np.mean(coh[cardiac_mask]))
-            peak_coh = float(np.max(coh[cardiac_mask]))
+        # Guard against zero or flat variance signals which cause 0/0 -> NaN in coherence
+        if std1 <= 1e-8 or std2 <= 1e-8:
+            mean_coh = 0.0
+            peak_coh = 0.0
         else:
-            mean_coh = float(np.mean(coh)) if len(coh) > 0 else 0.0
-            peak_coh = float(np.max(coh)) if len(coh) > 0 else 0.0
+            nperseg = min(128, max(16, n // 2))
+            try:
+                freqs, coh = signal.coherence(s1, s2, fs=self.fps, nperseg=nperseg)
+                coh = np.nan_to_num(coh, nan=0.0, posinf=0.0, neginf=0.0)
+                cardiac_mask = (freqs >= 0.7) & (freqs <= 3.0)
+
+                if np.any(cardiac_mask):
+                    mean_coh = float(np.mean(coh[cardiac_mask]))
+                    peak_coh = float(np.max(coh[cardiac_mask]))
+                else:
+                    mean_coh = float(np.mean(coh)) if len(coh) > 0 else 0.0
+                    peak_coh = float(np.max(coh)) if len(coh) > 0 else 0.0
+            except Exception:
+                mean_coh = 0.0
+                peak_coh = 0.0
+
+        mean_coh = 0.0 if np.isnan(mean_coh) or np.isinf(mean_coh) else mean_coh
+        peak_coh = 0.0 if np.isnan(peak_coh) or np.isinf(peak_coh) else peak_coh
 
         return {
             "max_corr": round(max_corr, 4),
@@ -127,9 +140,12 @@ class ConsistencyFeatureExtractor:
             coherence_list.append(metrics["mean_coherence"])
 
         # 3. Overall cross-region agreement indices
-        features["mean_cross_correlation"] = float(np.mean(corr_list)) if corr_list else 0.0
-        features["mean_cross_coherence"] = float(np.mean(coherence_list)) if coherence_list else 0.0
-        features["min_cross_coherence"] = float(np.min(coherence_list)) if coherence_list else 0.0
+        valid_corr = [c for c in corr_list if not (np.isnan(c) or np.isinf(c))]
+        valid_coh = [c for c in coherence_list if not (np.isnan(c) or np.isinf(c))]
+
+        features["mean_cross_correlation"] = float(np.mean(valid_corr)) if valid_corr else 0.0
+        features["mean_cross_coherence"] = float(np.mean(valid_coh)) if valid_coh else 0.0
+        features["min_cross_coherence"] = float(np.min(valid_coh)) if valid_coh else 0.0
 
         # Physiological plausibility score (0 to 1 heuristic index for feedback)
         # Real pulses typically have mean cross coherence > 0.4 and SNR > 2.0 dB
@@ -142,5 +158,10 @@ class ConsistencyFeatureExtractor:
                 1.0
             )
         )
+
+        # Final sanitization: ensure no NaN/inf persists in returned features
+        for k, v in features.items():
+            if np.isnan(v) or np.isinf(v):
+                features[k] = 0.0
 
         return features

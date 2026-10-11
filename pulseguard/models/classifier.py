@@ -3,6 +3,8 @@ import joblib
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Any, Optional
+import logging
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
@@ -13,6 +15,8 @@ from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, confusion_matrix, classification_report
 )
+
+logger = logging.getLogger("PulseGuardClassifier")
 
 class PulseGuardClassifier:
     """
@@ -41,6 +45,7 @@ class PulseGuardClassifier:
         self.evaluation_results: Dict[str, Any] = {}
 
     def _build_model(self):
+        imputer = SimpleImputer(strategy="median")
         scaler = StandardScaler()
         if self.model_type == "logistic_regression":
             clf = LogisticRegression(class_weight="balanced", random_state=42, max_iter=1000)
@@ -50,9 +55,26 @@ class PulseGuardClassifier:
             clf = SVC(kernel="rbf", probability=True, class_weight="balanced", random_state=42)
 
         return Pipeline([
+            ("imputer", imputer),
             ("scaler", scaler),
             ("classifier", clf)
         ])
+
+    def validate_features(self, feature_dict: Dict[str, float]) -> Tuple[bool, List[str], Dict[str, float]]:
+        """
+        Identify exactly which features contain NaN, positive infinity, or negative infinity.
+        Logs feature names and values safely.
+        Returns (is_valid, list_of_invalid_feature_names, invalid_details_dict).
+        """
+        invalid_features = {}
+        for feat_name in self.FEATURE_NAMES:
+            val = feature_dict.get(feat_name, np.nan)
+            if val is None or np.isnan(val) or np.isinf(val):
+                invalid_features[feat_name] = val
+                logger.warning("Invalid feature detected in input: %s = %s", feat_name, val)
+
+        is_valid = len(invalid_features) == 0
+        return is_valid, list(invalid_features.keys()), invalid_features
 
     def train_and_evaluate(
         self,
@@ -116,6 +138,7 @@ class PulseGuardClassifier:
     def predict_sample(self, feature_dict: Dict[str, float]) -> Dict[str, Any]:
         """
         Predict whether a video is Real or Deepfake based on extracted physiological features.
+        Validates feature integrity and logs any NaN/Inf entries.
         """
         if not self.is_trained or self.pipeline is None:
             return {
@@ -123,30 +146,59 @@ class PulseGuardClassifier:
                 "prediction": "Unknown",
                 "label": -1,
                 "confidence": 0.0,
+                "is_valid_sample": False,
+                "invalid_features": [],
                 "explanation": "No trained machine learning model loaded. Analysis is unvalidated signal evaluation only."
             }
 
-        # Format input vector
-        row = [feature_dict.get(k, 0.0) for k in self.FEATURE_NAMES]
+        # Check for invalid feature values (NaN, +inf, -inf)
+        is_valid, invalid_keys, invalid_details = self.validate_features(feature_dict)
+
+        # Check expected feature count and alignment
+        expected_features = self.FEATURE_NAMES
+        row = [feature_dict.get(k, np.nan) for k in expected_features]
         x_vec = np.array(row, dtype=float).reshape(1, -1)
 
-        pred_label = int(self.pipeline.predict(x_vec)[0])
-        probas = self.pipeline.predict_proba(x_vec)[0]
-        real_prob = float(probas[1])
-        fake_prob = float(probas[0])
+        # If too many key features are missing/invalid, reject prediction
+        if not is_valid:
+            logger.warning(
+                "Sample contains %d invalid features: %s",
+                len(invalid_keys), invalid_details
+            )
 
-        label_name = "Real" if pred_label == 1 else "Deepfake / Manipulated"
-        confidence = real_prob if pred_label == 1 else fake_prob
+        try:
+            pred_label = int(self.pipeline.predict(x_vec)[0])
+            probas = self.pipeline.predict_proba(x_vec)[0]
+            real_prob = float(probas[1])
+            fake_prob = float(probas[0])
 
-        return {
-            "is_model_trained": True,
-            "prediction": label_name,
-            "label": pred_label,
-            "real_probability": round(real_prob, 4),
-            "fake_probability": round(fake_prob, 4),
-            "confidence": round(confidence, 4),
-            "explanation": f"Model classified video as {label_name} with {confidence*100:.1f}% confidence."
-        }
+            label_name = "Real" if pred_label == 1 else "Deepfake / Manipulated"
+            confidence = real_prob if pred_label == 1 else fake_prob
+
+            return {
+                "is_model_trained": True,
+                "prediction": label_name,
+                "label": pred_label,
+                "real_probability": round(real_prob, 4),
+                "fake_probability": round(fake_prob, 4),
+                "confidence": round(confidence, 4),
+                "is_valid_sample": is_valid,
+                "invalid_features": invalid_keys,
+                "invalid_details": invalid_details,
+                "explanation": f"Model classified video as {label_name} with {confidence*100:.1f}% confidence."
+            }
+        except Exception as e:
+            logger.error("Classifier inference failed: %s", e)
+            return {
+                "is_model_trained": True,
+                "prediction": "Error",
+                "label": -1,
+                "confidence": 0.0,
+                "is_valid_sample": False,
+                "invalid_features": invalid_keys,
+                "invalid_details": invalid_details,
+                "explanation": f"Inference failed due to feature incompatibility: {e}"
+            }
 
     def save(self, file_path: str):
         """Serialize trained pipeline to disk via Joblib."""
