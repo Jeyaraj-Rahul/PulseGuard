@@ -185,7 +185,8 @@ class PulseGuardClassifier:
                 "is_valid_sample": is_valid,
                 "invalid_features": invalid_keys,
                 "invalid_details": invalid_details,
-                "explanation": f"Model classified video as {label_name} with {confidence*100:.1f}% confidence."
+                "is_calibrated": False,
+                "explanation": f"Baseline {self.model_type.upper()} model scored video as {label_name} (uncalibrated confidence: {confidence*100:.1f}%)."
             }
         except Exception as e:
             logger.error("Classifier inference failed: %s", e)
@@ -197,6 +198,7 @@ class PulseGuardClassifier:
                 "is_valid_sample": False,
                 "invalid_features": invalid_keys,
                 "invalid_details": invalid_details,
+                "is_calibrated": False,
                 "explanation": f"Inference failed due to feature incompatibility: {e}"
             }
 

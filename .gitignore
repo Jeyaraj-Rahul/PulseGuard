@@ -1,0 +1,100 @@
+
+# ─── Python virtual environments ─────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ─── Python cache / bytecode ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ─── Environment variables & secrets ─────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Project-specific generated data & reports ───────────────────────────────
+data/
+*.csv
+*.json
+*.log
+*.tmp
+
+# ─── ML model checkpoints & weights ──────────────────────────────────────────
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+models/saved/
+runs/
+
+# ─── Jupyter ─────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ─── Testing & coverage ───────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.pytest_cache
+
+# ─── Linting / type-checking ─────────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.pylint.d/
+
+# ─── Build / packaging ────────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+wheels/
+pip-wheel-metadata/
+
+# ─── OS artifacts ─────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ─── Editor / IDE artifacts ───────────────────────────────────────────────────
+# Vim
+*.swp
+*.swo
+*.swn
+# VS Code
+.vscode/
+# PyCharm / JetBrains
+.idea/
+*.iml
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ─── Streamlit ────────────────────────────────────────────────────────────────
+.streamlit/secrets.toml
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+*.sqlite3
+*.db
+*.lock
+*.bak
+*.orig
+output/
+results/
+figures/

@@ -195,12 +195,13 @@ class SignalProcessor:
         sig_power = float(np.sum(band_power[signal_mask]))
         noise_power = float(np.sum(band_power[~signal_mask]))
 
+        # Calculate SNR in dB without artificial arbitrary ceilings
         if sig_power <= 1e-12:
             snr_db = -20.0
-        elif noise_power > 1e-12:
-            snr_db = float(10.0 * np.log10(sig_power / noise_power))
+        elif noise_power <= 1e-12:
+            snr_db = 15.0  # clean signal with negligible out-of-band energy
         else:
-            snr_db = 15.0
+            snr_db = float(10.0 * np.log10(sig_power / noise_power))
 
         return {
             "bpm": round(peak_bpm, 1),

@@ -7,13 +7,13 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # Canonical MediaPipe landmark indices for ROIs
-# Forehead: middle of upper forehead
-FOREHEAD_LANDMARKS = [10, 67, 109, 338, 297, 151, 9]
-# Left Cheek (anatomical left / camera right)
+# Forehead: centralized mid-forehead skin strictly below hairline and above eyebrows (avoiding hairline 10, glabella 9, and eyebrows 70, 63, 105, 334)
+FOREHEAD_LANDMARKS = [67, 109, 151, 338, 297]
+# Left Cheek (anatomical left / camera right): sub-zygomatic skin patch below eye
 LEFT_CHEEK_LANDMARKS = [330, 347, 348, 349, 350, 423, 427, 436]
-# Right Cheek (anatomical right / camera left)
+# Right Cheek (anatomical right / camera left): sub-zygomatic skin patch below eye
 RIGHT_CHEEK_LANDMARKS = [101, 118, 119, 120, 121, 203, 207, 216]
-# Nose bridge / Central face (additional reference region)
+# Nose bridge / Central face: lower dorsal skin between bridge and tip
 NOSE_LANDMARKS = [1, 2, 98, 327]
 
 class FaceROIExtractor:
@@ -40,8 +40,8 @@ class FaceROIExtractor:
         )
         self.detector = vision.FaceLandmarker.create_from_options(options)
 
-    def _get_roi_bounding_box(self, landmarks, indices: List[int], img_w: int, img_h: int, margin: float = 0.08) -> Optional[Tuple[int, int, int, int]]:
-        """Compute pixel bounding box for a set of landmarks with safety margin."""
+    def _get_roi_bounding_box(self, landmarks, indices: List[int], img_w: int, img_h: int, margin: float = 0.05) -> Optional[Tuple[int, int, int, int]]:
+        """Compute pixel bounding box for a set of landmarks with tight safety margin to isolate skin."""
         pts = []
         for idx in indices:
             if idx < len(landmarks):

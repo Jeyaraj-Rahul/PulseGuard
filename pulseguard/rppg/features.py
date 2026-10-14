@@ -147,17 +147,11 @@ class ConsistencyFeatureExtractor:
         features["mean_cross_coherence"] = float(np.mean(valid_coh)) if valid_coh else 0.0
         features["min_cross_coherence"] = float(np.min(valid_coh)) if valid_coh else 0.0
 
-        # Physiological plausibility score (0 to 1 heuristic index for feedback)
-        # Real pulses typically have mean cross coherence > 0.4 and SNR > 2.0 dB
-        features["consistency_score"] = float(
-            np.clip(
-                (features["mean_cross_coherence"] * 0.6) +
-                (max(0.0, features["mean_snr"]) / 20.0 * 0.4) -
-                (min(20.0, features["bpm_std_dev"]) / 20.0 * 0.3),
-                0.0,
-                1.0
-            )
-        )
+        # Multi-region physiological agreement index [0.0 - 1.0]
+        # Normalized purely from cross-patch coherence and SNR without arbitrary fake penalties
+        norm_coh = max(0.0, min(1.0, features["mean_cross_coherence"]))
+        norm_snr = max(0.0, min(1.0, (features["mean_snr"] + 5.0) / 15.0))
+        features["consistency_score"] = float(np.clip(0.6 * norm_coh + 0.4 * norm_snr, 0.0, 1.0))
 
         # Final sanitization: ensure no NaN/inf persists in returned features
         for k, v in features.items():
@@ -165,3 +159,64 @@ class ConsistencyFeatureExtractor:
                 features[k] = 0.0
 
         return features
+
+    def assess_signal_quality(
+        self,
+        features: Dict[str, float],
+        face_tracking_ratio: float,
+        duration_sec: float
+    ) -> Dict[str, Any]:
+        """
+        Signal-Quality Gate:
+        Evaluates whether extracted rPPG signals contain sufficient physiological evidence.
+        If signals are noisy, duration is too short, or regions exhibit extreme divergence,
+        flags the analysis as inconclusive rather than jumping to a deepfake verdict.
+        """
+        reasons = []
+
+        # Gate 1: Face tracking coverage
+        if face_tracking_ratio < 0.60:
+            reasons.append(f"Low face tracking coverage ({face_tracking_ratio*100:.1f}% < 60%).")
+
+        # Gate 2: Signal duration for frequency resolution
+        if duration_sec < 4.0:
+            reasons.append(f"Video duration ({duration_sec:.1f}s) is too short for fine spectral resolution (minimum 4s required).")
+
+        # Gate 3: Regional SNR floor
+        mean_snr = features.get("mean_snr", -20.0)
+        regional_snrs = [
+            features.get("forehead_snr", -20.0),
+            features.get("left_cheek_snr", -20.0),
+            features.get("right_cheek_snr", -20.0),
+            features.get("nose_snr", -20.0)
+        ]
+        sub_zero_count = sum(1 for s in regional_snrs if s < 0.0)
+
+        if mean_snr < 0.0:
+            reasons.append(f"Sub-zero mean blood perfusion SNR ({mean_snr:.2f} dB < 0.0 dB). Signals are noise-dominated across the face.")
+        elif sub_zero_count >= 3:
+            reasons.append(f"Negative SNR on {sub_zero_count} of 4 facial regions (sub-zero perfusion). Only {4 - sub_zero_count} region(s) exhibit signal power above noise floor.")
+
+        # Gate 4: Extreme cross-region heart rate divergence
+        bpm_std = features.get("bpm_std_dev", 0.0)
+        bpm_diff = features.get("bpm_max_diff", 0.0)
+        if bpm_diff > 35.0 or bpm_std > 25.0:
+            reasons.append(f"Substantial heart rate divergence across facial patches (std={bpm_std:.1f} BPM, max diff={bpm_diff:.1f} BPM). May indicate localized motion, lighting shadows, or boundary artifact.")
+
+        # Gate 5: Cross-patch coherence floor
+        mean_coh = features.get("mean_cross_coherence", 0.0)
+        if mean_coh < 0.20 and mean_snr < 1.0:
+            reasons.append(f"Negligible cross-patch coherence ({mean_coh:.3f} < 0.20) combined with low perfusion SNR ({mean_snr:.2f} dB).")
+
+        is_reliable = len(reasons) == 0
+
+        return {
+            "is_reliable": is_reliable,
+            "status": "Reliable" if is_reliable else "Inconclusive",
+            "reasons": reasons,
+            "summary": (
+                "Sufficient physiological signal quality detected across facial ROIs."
+                if is_reliable else
+                "Inconclusive — insufficient physiological evidence to produce a verified determination."
+            )
+        }

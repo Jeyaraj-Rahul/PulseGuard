@@ -53,6 +53,15 @@ st.markdown("""
         font-weight: 600;
         font-size: 14px;
     }
+    .badge-inconclusive {
+        background-color: #37474f;
+        color: #eceff1;
+        padding: 4px 10px;
+        border-radius: 4px;
+        font-weight: 600;
+        font-size: 14px;
+        border: 1px solid #78909c;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -228,24 +237,35 @@ if app_mode == "Video Analysis Dashboard":
                     st.markdown("<div class='badge-unvalidated' style='font-size:18px; display:inline-block; padding:8px 16px;'>⚠️ SAMPLE REJECTED: NO FACE DETECTED</div>", unsafe_allow_html=True)
                     st.warning("Prediction skipped: No face was found to extract rPPG physiological signals. Upload a video with a visible, unobstructed face.")
                 else:
-                    # Validate features before inference
-                    is_valid_feat, invalid_keys, invalid_dict = classifier.validate_features(features)
-                    if not is_valid_feat:
-                        st.warning(f"⚠️ Detected {len(invalid_keys)} degraded/invalid features: {', '.join(invalid_keys)}. Features will be safely imputed via median training statistics.")
+                    duration_sec = float(len(timestamps) / fps) if fps > 0 else 0.0
+                    quality = feat_extractor.assess_signal_quality(features, track_ratio, duration_sec)
 
-                    pred_result = classifier.predict_sample(features)
-
-                    if pred_result["is_model_trained"] and pred_result.get("prediction") not in ["Unknown", "Error"]:
-                        if pred_result["label"] == 1:
-                            st.markdown(f"<div class='badge-real' style='font-size:20px; display:inline-block; padding:10px 20px; margin-bottom:10px;'>🟢 PREDICTION: {pred_result['prediction'].upper()}</div>", unsafe_allow_html=True)
-                        else:
-                            st.markdown(f"<div class='badge-fake' style='font-size:20px; display:inline-block; padding:10px 20px; margin-bottom:10px;'>🔴 PREDICTION: {pred_result['prediction'].upper()}</div>", unsafe_allow_html=True)
-                        
-                        st.write(f"**Confidence:** `{pred_result['confidence']*100:.1f}%`")
-                        st.caption("⚠️ Notice: Prediction is provided by the calibrated subject-independent baseline model. See 'Methodology & Limitations' for deepfake spoofing caveats.")
+                    if not quality["is_reliable"]:
+                        st.markdown("<div class='badge-inconclusive' style='font-size:18px; display:inline-block; padding:8px 16px; margin-bottom:10px;'>⚪ INCONCLUSIVE — INSUFFICIENT PHYSIOLOGICAL EVIDENCE</div>", unsafe_allow_html=True)
+                        st.info(f"**Quality Gate Warning:** {quality['summary']}")
+                        with st.expander("Diagnostic details & quality reasons", expanded=True):
+                            for r in quality.get("reasons", []):
+                                st.write(f"- {r}")
+                            st.caption("A definitive deepfake determination is withheld when regional pulse measurements diverge sharply, face tracking is unstable, or blood volume pulse SNR is sub-zero.")
                     else:
-                        st.markdown("<div class='badge-unvalidated' style='font-size:18px; display:inline-block; padding:8px 16px;'>⚠️ UNVALIDATED PRELIMINARY ANALYSIS</div>", unsafe_allow_html=True)
-                        st.info(pred_result.get("explanation", "Showing direct signal metrics without empirical classification."))
+                        # Validate features before inference
+                        is_valid_feat, invalid_keys, invalid_dict = classifier.validate_features(features)
+                        if not is_valid_feat:
+                            st.warning(f"⚠️ Detected {len(invalid_keys)} degraded/invalid features: {', '.join(invalid_keys)}. Features will be safely imputed via median training statistics.")
+
+                        pred_result = classifier.predict_sample(features)
+
+                        if pred_result["is_model_trained"] and pred_result.get("prediction") not in ["Unknown", "Error"]:
+                            if pred_result["label"] == 1:
+                                st.markdown(f"<div class='badge-real' style='font-size:20px; display:inline-block; padding:10px 20px; margin-bottom:10px;'>🟢 PREDICTION: {pred_result['prediction'].upper()}</div>", unsafe_allow_html=True)
+                            else:
+                                st.markdown(f"<div class='badge-fake' style='font-size:20px; display:inline-block; padding:10px 20px; margin-bottom:10px;'>🔴 PREDICTION: {pred_result['prediction'].upper()}</div>", unsafe_allow_html=True)
+                            
+                            st.write(f"**Uncalibrated Confidence Score:** `{pred_result['confidence']*100:.1f}%`")
+                            st.caption("⚠️ Notice: Score is Platt scaling output from a baseline model trained on synthetic benchmark distributions without independent probability calibration on real-world datasets. It is a research heuristic, not a certified forensic guarantee. See 'Methodology & Limitations'.")
+                        else:
+                            st.markdown("<div class='badge-unvalidated' style='font-size:18px; display:inline-block; padding:8px 16px;'>⚠️ UNVALIDATED PRELIMINARY ANALYSIS</div>", unsafe_allow_html=True)
+                            st.info(pred_result.get("explanation", "Showing direct signal metrics without empirical classification."))
 
             with col_details:
                 st.markdown("### Biophysiological Indicators")
@@ -276,7 +296,8 @@ elif app_mode == "Model Evaluation & Benchmarking":
     with col1:
         st.subheader("Model Status & Parameters")
         st.write(f"**Loaded Model Type:** `{classifier.model_type.upper()}`")
-        st.write(f"**Model Status:** `{'Trained & Calibrated' if classifier.is_trained else 'Untrained'}`")
+        st.write(f"**Model Status:** `{'Trained on Synthetic Benchmark' if classifier.is_trained else 'Untrained'}`")
+        st.caption("ℹ️ Model is fit on synthetic statistical distributions for architecture demonstration; empirical calibration on real clinical/deepfake video datasets is unverified.")
         
         eval_metrics = classifier.evaluation_results
         if eval_metrics:

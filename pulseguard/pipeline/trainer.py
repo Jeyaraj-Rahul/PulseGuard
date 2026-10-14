@@ -63,8 +63,8 @@ class DatasetPipeline:
 
     def extract_dataset_features(self, dataset_dir: str, max_duration_sec: float = 10.0) -> pd.DataFrame:
         """
-        Scan directory and compute features for all videos.
-        Assumes folders 'real' (label 1) and 'fake' (label 0).
+        Scan directory and compute features for all videos recursively.
+        Assumes folders 'real' (label 1) and 'fake' (label 0), which may contain subfolders.
         """
         rows = []
         for label_name, label_val in [("real", 1), ("fake", 0)]:
@@ -72,18 +72,25 @@ class DatasetPipeline:
             if not os.path.exists(folder):
                 continue
 
-            for fname in os.listdir(folder):
-                if fname.lower().endswith((".mp4", ".avi", ".mov", ".mkv")):
-                    vpath = os.path.join(folder, fname)
-                    print(f"Extracting features: [{label_name.upper()}] {fname}...")
-                    feats = self.process_single_video(vpath, max_duration_sec=max_duration_sec)
-                    if feats:
-                        feats["filename"] = fname
-                        feats["label"] = label_val
-                        # Heuristic: infer subject_id from prefix (e.g. subject01_fake.mp4 -> subject01)
-                        subject_id = fname.split("_")[0] if "_" in fname else fname.split(".")[0]
-                        feats["subject_id"] = subject_id
-                        rows.append(feats)
+            for root, _, files in os.walk(folder):
+                for fname in sorted(files):
+                    if fname.lower().endswith((".mp4", ".avi", ".mov", ".mkv")):
+                        vpath = os.path.join(root, fname)
+                        rel_sub = os.path.relpath(root, folder)
+                        generator_tag = "" if rel_sub == "." else f"[{rel_sub}] "
+                        print(f"Extracting features: [{label_name.upper()}] {generator_tag}{fname}...")
+                        feats = self.process_single_video(vpath, max_duration_sec=max_duration_sec)
+                        if feats:
+                            feats["filename"] = fname
+                            feats["label"] = label_val
+                            feats["category"] = rel_sub if rel_sub != "." else label_name
+                            # Infer subject_id (e.g. id0_0001 -> id0, 001_AkoolAI_fa021 -> akool_001)
+                            if "_" in fname:
+                                base_id = fname.split("_")[0]
+                            else:
+                                base_id = os.path.splitext(fname)[0]
+                            feats["subject_id"] = f"{rel_sub}_{base_id}" if rel_sub != "." else base_id
+                            rows.append(feats)
 
         df = pd.DataFrame(rows)
         return df
@@ -135,7 +142,7 @@ def generate_synthetic_benchmark_dataset(num_subjects: int = 12, samples_per_sub
                 "coh_left_cheek_right_cheek": real_coh * 0.98,
                 "mean_cross_correlation": real_coh * 0.9,
                 "mean_cross_coherence": real_coh,
-                "consistency_score": float(np.clip(real_coh * 0.75 + (real_snr / 20.0) * 0.25, 0.0, 1.0)),
+                "consistency_score": float(np.clip(0.6 * real_coh + 0.4 * ((real_snr + 5.0) / 15.0), 0.0, 1.0)),
                 "subject_id": subj_name,
                 "label": 1,
                 "filename": f"{subj_name}_real_{sample_i+1}.mp4"
@@ -174,7 +181,7 @@ def generate_synthetic_benchmark_dataset(num_subjects: int = 12, samples_per_sub
                 "coh_left_cheek_right_cheek": fake_coh * 0.95,
                 "mean_cross_correlation": float(np.random.uniform(0.05, 0.25)),
                 "mean_cross_coherence": fake_coh,
-                "consistency_score": float(np.clip(fake_coh * 0.5 + (max(0, fake_snr) / 20.0) * 0.2, 0.0, 1.0)),
+                "consistency_score": float(np.clip(0.6 * fake_coh + 0.4 * ((fake_snr + 5.0) / 15.0), 0.0, 1.0)),
                 "subject_id": subj_name,
                 "label": 0,
                 "filename": f"{subj_name}_fake_{sample_i+1}.mp4"

@@ -180,6 +180,124 @@ class TestPulseGuardPipeline(unittest.TestCase):
         self.assertEqual(clf.pipeline.named_steps["scaler"].n_features_in_, len(clf.FEATURE_NAMES))
         self.assertEqual(clf.pipeline.named_steps["classifier"].n_features_in_, len(clf.FEATURE_NAMES))
 
+    def test_synthetic_signal_processing_suite(self):
+        """
+        Verify signal processor with:
+        1. Clean pulse at known frequency (55 BPM, 0.917 Hz)
+        2. Noisy pulse (recovering fundamental pulse under noise)
+        3. Flat/zero signal (guarding against crashes, NaNs, and artificial default BPMs)
+        4. Mixed-frequency signal (verifying dominant component resolution)
+        """
+        fps = 30.0
+        dur = 10.0
+        n = int(fps * dur)
+        t = np.linspace(0, dur, n)
+
+        # 1. Clean 55 BPM pulse
+        pulse_55 = np.sin(2 * np.pi * (55.0 / 60.0) * t)
+        filt_clean = self.processor.bandpass_filter(pulse_55, fps)
+        spec_clean = self.processor.compute_spectrum(filt_clean, fps)
+        self.assertAlmostEqual(spec_clean["bpm"], 55.0, delta=2.0)
+        self.assertGreater(spec_clean["snr_db"], 10.0)
+
+        # 2. Noisy pulse (additive Gaussian noise std=1.5)
+        np.random.seed(42)
+        noisy_55 = pulse_55 + np.random.normal(0, 1.5, n)
+        filt_noisy = self.processor.bandpass_filter(noisy_55, fps)
+        spec_noisy = self.processor.compute_spectrum(filt_noisy, fps)
+        self.assertAlmostEqual(spec_noisy["bpm"], 55.0, delta=3.0)
+
+        # 3. Flat signal (zeros)
+        flat = np.zeros(n)
+        spec_flat = self.processor.compute_spectrum(flat, fps)
+        self.assertEqual(spec_flat["bpm"], 0.0)
+        self.assertEqual(spec_flat["snr_db"], -20.0)
+
+        # 4. Mixed-frequency signal: 55 BPM (amplitude 1.0) + 150 BPM (amplitude 0.4)
+        mixed = pulse_55 + 0.4 * np.sin(2 * np.pi * (150.0 / 60.0) * t)
+        filt_mixed = self.processor.bandpass_filter(mixed, fps)
+        spec_mixed = self.processor.compute_spectrum(filt_mixed, fps)
+        self.assertAlmostEqual(spec_mixed["bpm"], 55.0, delta=2.5)
+
+    def test_signal_quality_gate_divergent_regions(self):
+        """
+        Verify that when facial patches exhibit severe BPM divergence (e.g., forehead noise vs cheeks/nose),
+        the quality gate flags the sample as Inconclusive rather than issuing a false deepfake determination.
+        """
+        user_scenario_features = {
+            "forehead_bpm": 153.3,
+            "forehead_snr": -4.3,
+            "left_cheek_bpm": 57.9,
+            "left_cheek_snr": -0.2,
+            "right_cheek_bpm": 49.7,
+            "right_cheek_snr": 2.6,
+            "nose_bpm": 52.1,
+            "nose_snr": 1.4,
+            "bpm_std_dev": 43.43,
+            "bpm_max_diff": 103.6,
+            "mean_bpm": 78.25,
+            "mean_snr": -0.13,
+            "mean_cross_coherence": 0.35,
+            "consistency_score": 0.38
+        }
+
+        gate_res = self.feat_extractor.assess_signal_quality(
+            user_scenario_features,
+            face_tracking_ratio=1.0,
+            duration_sec=10.0
+        )
+        self.assertFalse(gate_res["is_reliable"])
+        self.assertEqual(gate_res["status"], "Inconclusive")
+        self.assertTrue(any("divergence" in r.lower() for r in gate_res["reasons"]))
+
+    def test_signal_quality_gate_sub_zero_mean_snr(self):
+        """Verify that mean SNR below 0 dB flags the sample as Inconclusive."""
+        features = {
+            "forehead_bpm": 52.0, "forehead_snr": 3.1,
+            "left_cheek_bpm": 53.0, "left_cheek_snr": -0.6,
+            "right_cheek_bpm": 64.0, "right_cheek_snr": -1.6,
+            "nose_bpm": 56.0, "nose_snr": -3.9,
+            "bpm_std_dev": 4.76, "bpm_max_diff": 12.0,
+            "mean_bpm": 56.25, "mean_snr": -0.74,
+            "mean_cross_coherence": 0.473, "consistency_score": 0.397
+        }
+        gate_res = self.feat_extractor.assess_signal_quality(features, face_tracking_ratio=1.0, duration_sec=19.8)
+        self.assertFalse(gate_res["is_reliable"])
+        self.assertEqual(gate_res["status"], "Inconclusive")
+        self.assertTrue(any("sub-zero mean" in r.lower() for r in gate_res["reasons"]))
+
+    def test_signal_quality_gate_three_regions_negative_snr(self):
+        """Verify that when 3 of 4 regions have negative SNR (even if mean SNR is slightly positive due to 1 outlier), it is Inconclusive."""
+        features = {
+            "forehead_bpm": 60.0, "forehead_snr": 5.0,     # positive
+            "left_cheek_bpm": 61.0, "left_cheek_snr": -0.5, # negative
+            "right_cheek_bpm": 62.0, "right_cheek_snr": -1.0, # negative
+            "nose_bpm": 59.0, "nose_snr": -2.0,            # negative
+            "bpm_std_dev": 1.1, "bpm_max_diff": 3.0,
+            "mean_bpm": 60.5, "mean_snr": 0.375,          # mean > 0, but 3 regions negative
+            "mean_cross_coherence": 0.55, "consistency_score": 0.52
+        }
+        gate_res = self.feat_extractor.assess_signal_quality(features, face_tracking_ratio=1.0, duration_sec=10.0)
+        self.assertFalse(gate_res["is_reliable"])
+        self.assertEqual(gate_res["status"], "Inconclusive")
+        self.assertTrue(any("3 of 4 facial regions" in r.lower() for r in gate_res["reasons"]))
+
+    def test_signal_quality_gate_adequate_snr_passes(self):
+        """Verify that samples with adequate SNR, duration, tracking, and consistency pass the quality gate."""
+        features = {
+            "forehead_bpm": 70.0, "forehead_snr": 4.5,
+            "left_cheek_bpm": 71.0, "left_cheek_snr": 3.8,
+            "right_cheek_bpm": 69.5, "right_cheek_snr": 4.0,
+            "nose_bpm": 70.5, "nose_snr": 2.5,
+            "bpm_std_dev": 0.7, "bpm_max_diff": 1.5,
+            "mean_bpm": 70.25, "mean_snr": 3.7,
+            "mean_cross_coherence": 0.68, "consistency_score": 0.65
+        }
+        gate_res = self.feat_extractor.assess_signal_quality(features, face_tracking_ratio=0.95, duration_sec=12.0)
+        self.assertTrue(gate_res["is_reliable"])
+        self.assertEqual(gate_res["status"], "Reliable")
+        self.assertEqual(len(gate_res["reasons"]), 0)
+
 if __name__ == "__main__":
     unittest.main()
 
